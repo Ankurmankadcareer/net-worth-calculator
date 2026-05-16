@@ -210,35 +210,45 @@ def update_holding(holding_id: int, asset_type: str, asset_name: str, ticker: st
         return False
 
 
-# ==================== PRICE FETCHING FUNCTIONS ====================
+# ==================== MOCKED PRICE DATA ====================
+# For demo app: use realistic but mocked prices to avoid API delays on startup
+DEMO_CURRENT_PRICES = {
+    "VOO": 425.50,      # S&P 500 ETF
+    "AAPL": 182.75,     # Apple
+    "INFY.NS": 1875.25, # Infosys
+    "RELIANCE.NS": 2890.50,  # Reliance
+    "120465": 52.40,    # Axis Bluechip Fund NAV
+}
+
 @st.cache_data(ttl=300)
 def get_exchange_rates() -> Dict[str, float]:
-    """Fetch USD to INR and USD to AED exchange rates."""
-    rates = {"USDINR": 85.5, "USDAED": 3.67}
+    """Get USD to INR and USD to AED exchange rates (cached)."""
+    # Use realistic default rates (updated quarterly in demo)
+    rates = {"USDINR": 83.45, "USDAED": 3.67}
 
+    # Try to fetch live rates but don't hang if it fails
     try:
-        logger.info("Fetching USDINR exchange rate...")
+        logger.info("Attempting to fetch live exchange rates...")
         data_inr = yf.Ticker("USDINR=X")
-        hist = data_inr.history(period="1d")
+        hist = data_inr.history(period="1d", timeout=3)
         if not hist.empty and "Close" in hist.columns:
             rate_inr = float(hist["Close"].iloc[-1])
             if rate_inr > 0:
                 rates["USDINR"] = rate_inr
-                logger.info(f"USDINR: {rate_inr}")
+                logger.info(f"✅ Live USDINR: {rate_inr}")
     except Exception as e:
-        logger.warning(f"Error fetching USDINR: {e}")
+        logger.warning(f"Using cached USDINR rate (fetch failed): {e}")
 
     try:
-        logger.info("Fetching USDAED exchange rate...")
         data_aed = yf.Ticker("USDAED=X")
-        hist = data_aed.history(period="1d")
+        hist = data_aed.history(period="1d", timeout=3)
         if not hist.empty and "Close" in hist.columns:
             rate_aed = float(hist["Close"].iloc[-1])
             if rate_aed > 0:
                 rates["USDAED"] = rate_aed
-                logger.info(f"USDAED: {rate_aed}")
+                logger.info(f"✅ Live USDAED: {rate_aed}")
     except Exception as e:
-        logger.warning(f"Error fetching USDAED: {e}")
+        logger.warning(f"Using cached USDAED rate (fetch failed): {e}")
 
     logger.info(f"Final exchange rates: {rates}")
     return rates
@@ -328,14 +338,23 @@ def get_mf_nav(amfi_code: str) -> Optional[float]:
     return None
 
 
-def get_current_price(asset_type: str, ticker: str) -> Optional[float]:
-    """Get current price based on asset type."""
+def get_current_price(asset_type: str, ticker: str, use_demo_data: bool = True) -> Optional[float]:
+    """Get current price based on asset type.
+    For demo portfolio, uses mocked prices. For new user additions, fetches live."""
     if asset_type == "Cash":
         return 1.0
-    elif asset_type == "Stock/ETF":
-        return get_stock_price(ticker)
+
+    # Try demo data first (fast, no API calls)
+    if use_demo_data and ticker in DEMO_CURRENT_PRICES:
+        logger.info(f"Using mocked price for {ticker}: ${DEMO_CURRENT_PRICES[ticker]}")
+        return DEMO_CURRENT_PRICES[ticker]
+
+    # Fall back to live data for new holdings user adds
+    if asset_type == "Stock/ETF":
+        return get_stock_price(ticker) or DEMO_CURRENT_PRICES.get(ticker)
     elif asset_type == "Indian Mutual Fund":
-        return get_mf_nav(ticker)
+        return get_mf_nav(ticker) or DEMO_CURRENT_PRICES.get(ticker)
+
     return None
 
 
@@ -383,10 +402,10 @@ def calculate_portfolio_value() -> Tuple[pd.DataFrame, Dict[str, float], Dict[st
     if df.empty:
         return df, {"USD": 0.0, "INR": 0.0, "AED": 0.0}, rates
 
-    # Add current price and converted values
+    # Add current price and converted values (use mocked prices for demo portfolio)
     df["current_price_usd"] = df.apply(
         lambda row: convert_to_usd(row["buy_price"], row["currency"], rates) if row["asset_type"] == "Cash"
-        else convert_to_usd(get_current_price(row["asset_type"], row["ticker"]) or row["buy_price"], row["currency"], rates),
+        else convert_to_usd(get_current_price(row["asset_type"], row["ticker"], use_demo_data=True) or row["buy_price"], row["currency"], rates),
         axis=1
     )
 
